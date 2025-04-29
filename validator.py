@@ -18,6 +18,7 @@ class Version:
         self.v = f'v{self.x}.{self.y}'
         # hyphen - starts with v, uses hyphens
         self.hyphen = f'v{self.x}-{self.y}'
+        self.branch = f'rhoai-{self.x}.{self.y}'
 
 class Release:
     def __init__(self, xyz, ocp_versions, addon_ocp_version):
@@ -37,12 +38,14 @@ def p02_paths(release):
     version_dir = tenant_dir / version.v
     prod_release_plan = version_dir / f"ProdReleasePlans-{version.v}.yaml"
     stage_release_plan = version_dir / f"StageReleasePlans-{version.v}.yaml"
+    project_development_stream = version_dir / f"ProjectDevelopmentStream-{version.v}.yaml"
 
     return { 
             "tenant": tenant_dir, 
             "version": version_dir,
             "prod_release_plan": prod_release_plan,
             "stage_release_plan": stage_release_plan,
+            "project_development_stream": project_development_stream,
             }
 
 
@@ -62,30 +65,30 @@ def test_release_level_kustomization(p02_paths, release):
 
 
 # Checks that apply to all release plan specs, stage and prod
-def validate_release_plans(release_plan, release):
+def validate_release_plans(manifest, release):
     version = release.version
-    name = release_plan["metadata"]["name"]
+    name = manifest["metadata"]["name"]
     assert re.search(version.hyphen, name), f"{name} has {version.hyphen} in the name"
-    assert re.search(version.hyphen, release_plan["metadata"]["labels"]["release.appstudio.openshift.io/releasePlanAdmission"]), f"{name} has {version.hyphen} in the releasePlanAdmission"
+    assert re.search(version.hyphen, manifest["metadata"]["labels"]["release.appstudio.openshift.io/releasePlanAdmission"]), f"{name} has {version.hyphen} in the releasePlanAdmission"
 
 # Checks that apply to all component release plan specs
-def validate_component_release_plans(release_plan, release):
+def validate_component_release_plans(manifest, release):
     version = release.version
-    application = release_plan["spec"]["application"]
-    name = release_plan["metadata"]["name"]
+    application = manifest["spec"]["application"]
+    name = manifest["metadata"]["name"]
     assert re.search(version.hyphen, application), f"{name} has {version.hyphen} in the application name"
     release_notes_sections = ["description", "synopsis", "solution"]
     for item in release_notes_sections:
-        section = release_plan["spec"]["data"]["releaseNotes"][item]
+        section = manifest["spec"]["data"]["releaseNotes"][item]
         assert re.search(version.xyz, section), f"{name} has correct version listed in the {item} section of the release notes"
 
 
 # Validate fbc managed release plans
-def validate_fbc_release_plans(release_plan, release):
+def validate_fbc_release_plans(manifest, release):
     version = release.version
 
-    application = release_plan["spec"]["application"]
-    name = release_plan["metadata"]["name"]
+    application = manifest["spec"]["application"]
+    name = manifest["metadata"]["name"]
     # filters out addon releases and component releases
     listed_ocp_version_regex = re.search(r'ocp-(\d+)$', application)
     assert listed_ocp_version_regex, f"{name} references application '{application}' with expected ocp suffix"
@@ -95,40 +98,39 @@ def validate_fbc_release_plans(release_plan, release):
 
     return listed_ocp_version
 
-def validate_addon_fbc_release_plans(release_plan, release):
+def validate_addon_fbc_release_plans(manifest, release):
     version = release.version
     addon_ocp_version = release.addon_ocp_version
-    listed_ocp_version = validate_fbc_release_plans(release_plan, release)
+    listed_ocp_version = validate_fbc_release_plans(manifest, release)
     assert listed_ocp_version == addon_ocp_version, f"addon ocp version {listed_ocp_version} should match expected {addon_ocp_version}"
 
 
-
-def validate_all_release_plans(release_plan_path, release):
-    data = list(yaml.load_all(release_plan_path))
-    filename = release_plan_path.name
+def validate_all_release_plans(file_path, release):
+    data = list(yaml.load_all(file_path))
+    filename = file_path.name
     has_ocp_versions = {v: False for v in release.ocp_versions}
     assert data, f"{filename} file exists"
     assert len(data) > 1, "f{filename} contains multiple subdocuments"
     n_release_plans = {"managed": 0, "component": 0, "addon": 0}
 
-    for release_plan in data:
-        application = release_plan["spec"]["application"]
-        name = release_plan["metadata"]["name"]
-        validate_release_plans(release_plan, release)
+    for manifest in data:
+        application = manifest["spec"]["application"]
+        name = manifest["metadata"]["name"]
+        validate_release_plans(manifest, release)
 
         if re.search('^rhoai-onprem', name) and re.search('^rhoai-v', application):
-            validate_component_release_plans(release_plan, release)
+            validate_component_release_plans(manifest, release)
             n_release_plans["component"] += 1
 
         elif re.search('^rhoai-onprem', name) and re.search('^rhoai-fbc-fragment', application):
             n_release_plans["managed"] += 1
-            listed_ocp_version = validate_fbc_release_plans(release_plan, release)
+            listed_ocp_version = validate_fbc_release_plans(manifest, release)
             assert has_ocp_versions[listed_ocp_version] == False, f"No duplicate releaseplan admissions for {listed_ocp_version} unless it is {release.addon_ocp_version}"
             has_ocp_versions[listed_ocp_version] = True
 
         elif re.search('^rhoai-addon', name):
             n_release_plans["addon"] += 1
-            validate_addon_fbc_release_plans(release_plan, release)
+            validate_addon_fbc_release_plans(manifest, release)
         else:
             assert False, f"{filename} only contains release plans with application:{application} and name:{name} that match expected patterns"
 
@@ -138,14 +140,46 @@ def validate_all_release_plans(release_plan_path, release):
 
 def test_stage_release_plans(p02_paths, release):
     version = release.version
-    release_plan_path = p02_paths["stage_release_plan"]
-    n_release_plans = validate_all_release_plans(release_plan_path, release)
+    file_path = p02_paths["stage_release_plan"]
+    n_release_plans = validate_all_release_plans(file_path, release)
     assert n_release_plans["addon"] == 1, "There is exactly one addon release in the stage release plan"
 
 
 def test_prod_release_plans(p02_paths, release):
     version = release.version
-    release_plan_path = p02_paths["prod_release_plan"]
-    n_release_plans = validate_all_release_plans(release_plan_path, release)
+    file_path = p02_paths["prod_release_plan"]
+    n_release_plans = validate_all_release_plans(file_path, release)
     assert n_release_plans["addon"] == 0, "There are zero addon releases in the prod release plan"
 
+def validate_project_development_stream(manifest, release):
+    version = release.version
+    assert re.search(version.hyphen, manifest["metadata"]["name"])
+    assert re.search(version.hyphen, manifest["spec"]["template"]["name"])
+    template_values = manifest["spec"]["template"]["values"]
+    assert len(template_values) == 3
+    for item in template_values:
+        assert "name" in item and "value" in item
+        name = item["name"]
+        value = item["value"]
+        if name == "version":
+            assert version.v == value, f"Template value ({name}: {value}) should match expected value {version.v}"
+        elif name == "versionName":
+            assert version.hyphen ==  value, f"Template value ({name}: {value}) should match expected value {version.hyphen}"
+        elif name == "branch":
+            assert version.branch == value, f"Template value ({name}: {value}) should match expected value {version.branch}"
+        else:
+            assert False, f"Template names in {manifest['metadata']['name']} should be either version, versionName, or branch, not '{name}'"
+
+def test_project_development_stream(p02_paths, release):
+    version = release.version
+    file_path = p02_paths["project_development_stream"]
+    data = list(yaml.load_all(file_path))
+    filename = file_path.name
+    for manifest in data:
+        kind = manifest["kind"]
+        if kind == "ProjectDevelopmentStream":
+            validate_project_development_stream(manifest, release)
+        elif kind == "ProjectDevelopmentStreamTemplate":
+            assert True
+        else:
+            assert False, f"The file {filename} has only ProjectDevelopmentStream/ProjectDevelopmentStreamTemplate manifests, and does not include '{kind}'"
