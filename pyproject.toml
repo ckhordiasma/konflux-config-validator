@@ -1,0 +1,10 @@
+
+[tool.pytest.ini_options]
+norecursedirs = [
+    ".git",
+    "konflux-release-data"
+]
+pythonpath = "."
+# log_cli = 1
+log_cli_level = "WARNING"
+
