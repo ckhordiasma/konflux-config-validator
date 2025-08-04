@@ -1,2 +1,3 @@
-konflux-release-data/
-__pycache__
+**/konflux-release-data/
+**/__pycache__
+
